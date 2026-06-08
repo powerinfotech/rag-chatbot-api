@@ -1,0 +1,32 @@
+services:
+  neo4j:
+    image: neo4j:5.26
+    container_name: panrye-neo4j
+    ports:
+      - "7474:7474"   # HTTP (브라우저: http://localhost:7474)
+      - "7687:7687"   # Bolt (앱 연결)
+    environment:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD:-please_change_me}"  # .env의 NEO4J_PASSWORD 자동 로드 (사용자명 'neo4j' 고정)
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+      NEO4J_server_memory_heap_initial__size: 1G
+      NEO4J_server_memory_heap_max__size: 2G
+      NEO4J_server_memory_pagecache_size: 1G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:7474 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    restart: unless-stopped           # 죽으면 자동 재시작 + 도커 데몬 기동 시 함께 복구(서버 재부팅 대응, systemd 불필요)
+    logging:                          # 로그 회전(무한 증가 방지) — docker compose logs 로 조회
+      driver: json-file
+      options:
+        max-size: "10m"               # 10MB마다 회전
+        max-file: "10"                # 최대 10개 보관(~100MB)
+
+volumes:
+  neo4j_data:
+  neo4j_logs:

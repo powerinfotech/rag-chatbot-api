@@ -1,0 +1,71 @@
+# 서버(배포)용 오버레이 — 기존 docker-compose.yml(neo4j)에 'app'(질의 서버) + 'ollama'(GPU)를 더한다.
+# 서버 전제: NVIDIA GPU + NVIDIA Container Toolkit 설치됨. (로컬 Mac은 이 파일을 쓰지 않는다.)
+#
+# 사용:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   # 최초 1회 모델 받기(볼륨 ollama_models에 캐시되어 재배포에도 보존):
+#   docker exec panrye-ollama ollama pull gemma4:e2b-it-q4_K_M
+#   docker exec panrye-ollama ollama pull bge-m3
+#
+# 데이터는 '적재'가 아니라 볼륨 복원으로 채운다(서버는 문서 파싱 안 함):
+#   1) 로컬(Mac)에서 적재 후  ./db_migration/backup_neo4j.sh    → neo4j_backup_<날짜>.tar.gz
+#   2) 서버로 전송 후         ./db_migration/restore_neo4j.sh neo4j_backup_*.tar.gz
+#   3) 위 compose 명령으로 neo4j + ollama + app 기동
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: panrye-app
+    ports:
+      - "8008:8008"
+    env_file:
+      - .env                      # NEO4J_USERNAME/PASSWORD 등 (gitignore됨)
+    environment:
+      # 컨테이너 네트워크에선 'localhost'가 아니라 '서비스명'으로 접속.
+      NEO4J_URI: bolt://neo4j:7687
+      OLLAMA_BASE_URL: "http://ollama:11434"   # GPU ollama 컨테이너(.env의 localhost를 덮어씀)
+      # 운영 CORS: 프론트 도메인만 허용(쉼표 구분). 주석 풀고 실제 도메인으로 교체.
+      # 미설정 시 .env(CORS_ALLOW_ORIGINS) 또는 기본값 '*' 사용.
+      # CORS_ALLOW_ORIGINS: "https://panrye.example.com"
+    depends_on:
+      neo4j:
+        condition: service_healthy   # 기존 neo4j healthcheck 통과 후
+      ollama:
+        condition: service_started   # ollama 서버 기동 후 (모델 pull은 최초 1회 별도)
+    restart: unless-stopped
+    logging:                          # 로그 회전 — docker compose ... logs -f app
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "10"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: panrye-ollama
+    volumes:
+      - ollama_models:/root/.ollama          # 받은 모델 캐시(재시작/재배포에도 보존)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all                      # 전체 GPU 사용(특정 개수면 숫자로)
+              capabilities: [gpu]
+    restart: unless-stopped
+    logging:                          # 로그 회전 — docker compose ... logs -f ollama
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "10"
+    # (선택) 호스트에서도 직접 접근하려면 포트 노출:
+    # ports:
+    #   - "11434:11434"
+
+volumes:
+  ollama_models:
+
+# 참고: 서버에서 GPU 컨테이너 대신 '호스트 Ollama'를 쓰려면 —
+#   1) 위 ollama 서비스와 volumes(ollama_models)를 지우고
+#   2) app.environment.OLLAMA_BASE_URL 을 http://host.docker.internal:11434 로 바꾼 뒤
+#   3) app 에 다음을 추가:  extra_hosts: ["host.docker.internal:host-gateway"]

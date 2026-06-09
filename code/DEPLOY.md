@@ -42,7 +42,7 @@ systemctl is-enabled docker || sudo systemctl enable --now docker
 nvidia-smi                                   # 호스트 드라이버 확인
 # Toolkit 설치 가이드:
 #   https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
-docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi   # 컨테이너 GPU 인식 확인
+docker run --rm --gpus all ubuntu nvidia-smi  # 컨테이너 GPU 인식 확인
 ```
 
 > Ollama 컨테이너가 GPU를 쓰려면 **NVIDIA Container Toolkit**이 반드시 설치돼 있어야 한다.
@@ -201,6 +201,56 @@ uvicorn app.main:app --reload --port 8008           # 질의 서버(--reload)
 ```
 
 > 로컬에선 `-f docker-compose.prod.yml` 을 붙이지 말 것 — 앱·ollama 이미지까지 빌드하려다 Mac GPU에서 막힌다.
+
+---
+
+## 로컬 개발 (Windows) — 참고
+
+Windows도 macOS처럼 **따로따로** 띄운다 (Neo4j만 Docker, Ollama·앱은 네이티브).
+다만 macOS와 달리 **NVIDIA GPU가 있으면 Ollama가 자동으로 GPU(CUDA)를 쓴다** — 드라이버만 설치돼 있으면 Mac(Metal)보다 빠를 수 있다(GPU 없으면 CPU=느림).
+
+> 설치:
+> - **Docker Desktop for Windows** ([다운로드](https://www.docker.com/products/docker-desktop/)) — **WSL2 백엔드** 필요. Neo4j 컨테이너용.
+> - **Ollama for Windows** ([ollama.com/download](https://ollama.com/download)) — 설치하면 백그라운드(트레이)로 자동 실행되어 `127.0.0.1:11434` 에서 대기. NVIDIA 드라이버가 있으면 GPU 자동 사용.
+> - **Miniconda for Windows**(또는 Python 3.11 + venv), **Git for Windows**.
+
+아래는 **PowerShell** 기준이다(레포 루트에서 시작).
+
+```powershell
+# 0) 환경설정 — code\.env 생성 후 NEO4J_PASSWORD 등 설정 (.env.example 참고)
+Copy-Item code\.env.example code\.env
+
+cd code
+docker compose up -d                  # 1) Neo4j 만 (베이스 compose; prod.yml 안 씀)
+
+# 2) Ollama: 설치 시 자동 실행되므로(트레이 아이콘 확인) 모델만 받으면 됨
+ollama pull gemma4:e2b-it-q4_K_M
+ollama pull bge-m3
+
+# 3) 앱 환경 (최초 1회: 생성 + 의존성)
+conda create -n neo4j-gemma-rag python=3.11 -y
+conda activate neo4j-gemma-rag
+pip install -r requirements.txt
+
+# 4) 적재 — PowerShell 환경변수 문법 (bash의 `PYTHONPATH=.` 는 안 먹힘)
+$env:PYTHONPATH="."; python scripts\ingest_cli.py --reset
+
+# 5) 질의 서버
+uvicorn app.main:app --reload --port 8008
+```
+
+확인: `curl http://localhost:8008/health` (PowerShell은 `curl.exe ...`) → `neo4j=true, ollama=true`.
+브라우저 문서: `http://localhost:8008/docs`
+
+### Windows 주의사항
+
+- **`.doc`(구버전 워드) 적재 불가** — `.doc` 파싱은 macOS 전용 `textutil`에 의존해 Windows에선 에러가 난다. 대응:
+  - 코퍼스를 **`.docx`로 먼저 변환**(Word/LibreOffice 일괄 변환) 후 적재(`.docx`만 있으면 적재 정상), 또는
+  - 적재는 건너뛰고 **로컬 백업을 볼륨 복원**으로 채운 뒤 질의만 한다(서버 §4 방식과 동일).
+- **bash 스크립트는 네이티브에서 안 됨** — `db_migration\backup_neo4j.sh`·`restore_neo4j.sh`(및 위 복원)은 **WSL 또는 Git Bash**에서 실행한다(Docker Desktop이 켜져 있으면 `docker` 명령은 그대로 통한다).
+- **환경변수 문법**: PowerShell = `$env:PYTHONPATH="."; python ...` / cmd = `set PYTHONPATH=.` 다음 줄에서 `python ...`. (bash식 `PYTHONPATH=. python ...` 은 Windows에서 안 먹힘)
+- **venv를 쓸 경우**: `python -m venv .venv` 후 `.\.venv\Scripts\Activate.ps1` 로 활성화. 활성화가 막히면 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- **prod.yml 붙이지 말 것** — 로컬은 `docker compose up -d`(Neo4j)만. 전체 Docker(app·ollama) 스택은 서버용이다. (NVIDIA GPU + WSL2가 있으면 서버 방식 전체 Docker도 가능하지만, 로컬 개발엔 위 분리 방식이 간단)
 
 ---
 
